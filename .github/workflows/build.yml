@@ -1,0 +1,265 @@
+name: Build BTFrontCamTest 48k
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "import/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android command-line tools
+        shell: bash
+        run: |
+          export ANDROID_SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip" -o /tmp/cmdline-tools.zip
+          rm -rf /tmp/android-cmd
+          mkdir -p /tmp/android-cmd
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/android-cmd
+          mv /tmp/android-cmd/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Decode v0.1 source
+        run: |
+          rm -rf btfrontcam-src
+          mkdir -p btfrontcam-src
+          base64 -d import/source-v01.zip.b64 > /tmp/btfrontcam.zip
+          unzip -q /tmp/btfrontcam.zip -d btfrontcam-src
+
+      - name: Apply Camera2 + UI v0.3 fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("btfrontcam-src/app/src/main/java/com/malcerz/btfrontcamtest/MainActivity.java")
+          s = p.read_text(encoding="utf-8")
+
+          s = s.replace(
+              "    private boolean routeVerified = false;\n    private boolean aborting = false;\n",
+              "    private boolean routeVerified = false;\n    private boolean aborting = false;\n"
+              "    private boolean cameraOpening = false;\n"
+              "    private boolean previewConfiguring = false;\n"
+          )
+
+          s = s.replace(
+              "    private Size chooseVideoSize(Size[] sizes) {\n"
+              "        List<Size> candidates = new ArrayList<>();\n",
+              "    private Size chooseVideoSize(Size[] sizes) {\n"
+              "        // Prefer 720p on OEM Camera2 implementations; it is almost universally\n"
+              "        // valid for both SurfaceTexture preview and MediaRecorder.\n"
+              "        for (Size s : sizes) {\n"
+              "            if (s.getWidth() == 1280 && s.getHeight() == 720) return s;\n"
+              "        }\n"
+              "        List<Size> candidates = new ArrayList<>();\n"
+          )
+
+          s = s.replace(
+              "        if (!hasPermissions() || frontCameraId == null || cameraDevice != null) return;\n"
+              "        try {\n",
+              "        if (!hasPermissions() || frontCameraId == null || cameraDevice != null || cameraOpening) return;\n"
+              "        cameraOpening = true;\n"
+              "        try {\n"
+          )
+
+          s = s.replace(
+              "                public void onOpened(CameraDevice camera) {\n"
+              "                    cameraDevice = camera;\n",
+              "                public void onOpened(CameraDevice camera) {\n"
+              "                    cameraOpening = false;\n"
+              "                    cameraDevice = camera;\n"
+          )
+
+          s = s.replace(
+              "                public void onDisconnected(CameraDevice camera) {\n"
+              "                    camera.close();\n",
+              "                public void onDisconnected(CameraDevice camera) {\n"
+              "                    cameraOpening = false;\n"
+              "                    camera.close();\n"
+          )
+
+          s = s.replace(
+              "                public void onError(CameraDevice camera, int error) {\n"
+              "                    camera.close();\n",
+              "                public void onError(CameraDevice camera, int error) {\n"
+              "                    cameraOpening = false;\n"
+              "                    camera.close();\n"
+          )
+
+          s = s.replace(
+              "        } catch (Exception e) {\n"
+              "            setStatus(\"openCamera ERROR: \" + e);\n"
+              "        }\n"
+              "    }\n\n"
+              "    private void startPreview() {\n"
+              "        if (cameraDevice == null || !preview.isAvailable() || isRecording) return;\n"
+              "        try {\n",
+              "        } catch (Exception e) {\n"
+              "            cameraOpening = false;\n"
+              "            setStatus(\"openCamera ERROR: \" + e);\n"
+              "        }\n"
+              "    }\n\n"
+              "    private void startPreview() {\n"
+              "        if (cameraDevice == null || !preview.isAvailable() || isRecording || previewConfiguring) return;\n"
+              "        previewConfiguring = true;\n"
+              "        try {\n"
+          )
+
+          s = s.replace(
+              "            SurfaceTexture texture = preview.getSurfaceTexture();\n"
+              "            if (texture == null) return;\n",
+              "            SurfaceTexture texture = preview.getSurfaceTexture();\n"
+              "            if (texture == null) { previewConfiguring = false; return; }\n"
+          )
+
+          s = s.replace(
+              "            Surface surface = new Surface(texture);\n\n"
+              "            cameraDevice.createCaptureSession(\n",
+              "            Surface surface = new Surface(texture);\n\n"
+              "            if (captureSession != null) {\n"
+              "                captureSession.close();\n"
+              "                captureSession = null;\n"
+              "            }\n\n"
+              "            cameraDevice.createCaptureSession(\n"
+          )
+
+          s = s.replace(
+              "                        public void onConfigured(CameraCaptureSession session) {\n"
+              "                            if (cameraDevice == null || isRecording) {\n",
+              "                        public void onConfigured(CameraCaptureSession session) {\n"
+              "                            previewConfiguring = false;\n"
+              "                            if (cameraDevice == null || isRecording) {\n"
+          )
+
+          s = s.replace(
+              "                                session.setRepeatingRequest(builder.build(), null, mainHandler);\n"
+              "                            } catch (CameraAccessException e) {\n",
+              "                                session.setRepeatingRequest(builder.build(), null, mainHandler);\n"
+              "                                setStatus(\"Preview OK: \" + videoSize.getWidth() + \"x\" + videoSize.getHeight()\n"
+              "                                        + \"\\nKliknij SPRAWDŹ BT, potem NAGRYWAJ.\");\n"
+              "                            } catch (CameraAccessException e) {\n"
+          )
+
+          s = s.replace(
+              "                        public void onConfigureFailed(CameraCaptureSession session) {\n"
+              "                            setStatus(\"Preview configure failed.\");\n",
+              "                        public void onConfigureFailed(CameraCaptureSession session) {\n"
+              "                            previewConfiguring = false;\n"
+              "                            session.close();\n"
+              "                            setStatus(\"Preview configure failed: \" + videoSize.getWidth() + \"x\" + videoSize.getHeight());\n"
+          )
+
+          s = s.replace(
+              "        } catch (Exception e) {\n"
+              "            setStatus(\"startPreview ERROR: \" + e);\n"
+              "        }\n",
+              "        } catch (Exception e) {\n"
+              "            previewConfiguring = false;\n"
+              "            setStatus(\"startPreview ERROR: \" + e);\n"
+              "        }\n"
+          )
+
+          s = s.replace(
+              "    private void closeCamera() {\n"
+              "        if (captureSession != null) {\n",
+              "    private void closeCamera() {\n"
+              "        previewConfiguring = false;\n"
+              "        cameraOpening = false;\n"
+              "        if (captureSession != null) {\n"
+          )
+
+          p.write_text(s, encoding="utf-8")
+
+          # Move the whole bottom control area above Android's navigation bar.
+          lp = Path("btfrontcam-src/app/src/main/res/layout/activity_main.xml")
+          layout = lp.read_text(encoding="utf-8")
+          layout = layout.replace(
+              '    android:orientation="vertical"\n    android:background="#000000">',
+              '    android:orientation="vertical"\n'
+              '    android:background="#000000"\n'
+              '    android:paddingBottom="64dp">'
+          )
+          lp.write_text(layout, encoding="utf-8")
+
+          bp = Path("btfrontcam-src/app/build.gradle")
+          b = bp.read_text(encoding="utf-8")
+          b = b.replace("versionCode 1", "versionCode 3")
+          b = b.replace('versionName "0.1-test"', 'versionName "0.3-test"')
+          bp.write_text(b, encoding="utf-8")
+          PY
+
+      - name: Apply audio comparison v0.4
+        run: python3 import/quality-v04.py
+
+      - name: Configure 48 kHz and BT input diagnostics (v0.5)
+        run: python3 import/quality-v05.py
+
+      - name: Package v0.5 source
+        shell: bash
+        run: |
+          cd btfrontcam-src
+          zip -qr ../BTFrontCamTest-v0.5-source.zip . -x "*/build/*" ".gradle/*"
+
+      - name: Build debug APK
+        working-directory: btfrontcam-src
+        run: gradle :app:assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BTFrontCamTest-v0.5-48k-debug
+          path: btfrontcam-src/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload complete v0.5 source
+        uses: actions/upload-artifact@v4
+        with:
+          name: BTFrontCamTest-v0.5-source
+          path: BTFrontCamTest-v0.5-source.zip
+
+      - name: Publish unpacked camera sources on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a btfrontcam-src/app ./app
+          cp btfrontcam-src/build.gradle btfrontcam-src/settings.gradle btfrontcam-src/gradle.properties ./ 
+          cp btfrontcam-src/README.md ./README.md
+          cat > .gitignore <<'EOF'
+          .gradle/
+          .idea/
+          local.properties
+          **/build/
+          *.iml
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src app/build.gradle build.gradle settings.gradle gradle.properties README.md .gitignore
+          if ! git diff --staged --quiet; then
+            git commit -m "Publish camera 48 kHz Android sources after successful build"
+            git push origin HEAD:main
+          fi
