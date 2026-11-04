@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.malcerz.btfrontcamtest'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.malcerz.btfrontcamtest.hq"
+        minSdk 31
+        targetSdk 35
+        versionCode 5
+        versionName "0.5-48k"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
